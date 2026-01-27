@@ -1,0 +1,12 @@
+# Ignore specific notebooks
+qud.ipynb
+basic_bot.ipynb
+
+# Ignore specific file
+file
+
+# Ignore requirements file
+requirements.txt
+
+# Ignore virtual environment
+myenv/
