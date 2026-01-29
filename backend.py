@@ -7,7 +7,7 @@ from langgraph.graph.message import add_messages
 import os
 
 # ✅ Set key as OPENAI_API_KEY
-os.environ["OPENAI_API_KEY"] = "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"
+os.environ["OPENAI_API_KEY"] = "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"
 
 llm = ChatOpenAI(
     base_url="https://openrouter.ai/api/v1",
