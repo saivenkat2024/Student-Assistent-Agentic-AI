@@ -6,21 +6,24 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph.message import add_messages
 import os
 
-# ✅ Set key as OPENAI_API_KEY
-os.environ["OPENAI_API_KEY"] = "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"
+# ⚠️ NEVER hardcode API keys in production
+os.environ["OPENAI_API_KEY"] = "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"
 
 llm = ChatOpenAI(
     base_url="https://openrouter.ai/api/v1",
-    model="gpt-3.5-turbo"
+    model="gpt-3.5-turbo",
+    streaming=True
 )
 
 class ChatState(TypedDict):
     messages: Annotated[list[BaseMessage], add_messages]
 
+
 def chat_node(state: ChatState):
     messages = state["messages"]
     response = llm.invoke(messages)
     return {"messages": [response]}
+
 
 checkpointer = InMemorySaver()
 
