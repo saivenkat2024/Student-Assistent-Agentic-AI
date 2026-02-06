@@ -1,13 +1,23 @@
-from langgraph.graph import StateGraph, START, END
-from typing import TypedDict, Annotated
-from langchain_core.messages import BaseMessage
-from langchain_openai import ChatOpenAI
-from langgraph.checkpoint.memory import InMemorySaver
-from langgraph.graph.message import add_messages
 import os
+from typing import TypedDict, Annotated
 
-# ⚠️ NEVER hardcode API keys in production
-os.environ["OPENAI_API_KEY"] = "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"
+from langgraph.graph import StateGraph, START, END
+from langgraph.graph.message import add_messages
+from langgraph.checkpoint.memory import InMemorySaver
+
+from langchain_openai import ChatOpenAI
+from langchain_core.messages import BaseMessage, AIMessage
+from langchain_core.callbacks import BaseCallbackHandler
+
+# --------------------------------------------------
+# ENV
+# --------------------------------------------------
+
+os.environ["OPENAI_API_KEY"] = "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"  # keep yours
+
+# --------------------------------------------------
+# LLM (DEFINED ONCE)
+# --------------------------------------------------
 
 llm = ChatOpenAI(
     base_url="https://openrouter.ai/api/v1",
@@ -15,15 +25,54 @@ llm = ChatOpenAI(
     streaming=True
 )
 
+# --------------------------------------------------
+# State
+# --------------------------------------------------
+
 class ChatState(TypedDict):
     messages: Annotated[list[BaseMessage], add_messages]
 
+# --------------------------------------------------
+# Streaming Callback
+# --------------------------------------------------
+
+class StreamHandler(BaseCallbackHandler):
+    def __init__(self, on_token):
+        self.on_token = on_token
+        self.buffer = []
+
+    def on_llm_new_token(self, token: str, **kwargs):
+        self.buffer.append(token)
+        self.on_token(token)
+
+# --------------------------------------------------
+# Graph Node
+# --------------------------------------------------
 
 def chat_node(state: ChatState):
     messages = state["messages"]
-    response = llm.invoke(messages)
-    return {"messages": [response]}
 
+    streamed_tokens = []
+
+    def token_callback(token):
+        streamed_tokens.append(token)
+
+    handler = StreamHandler(token_callback)
+
+    # IMPORTANT: pass callbacks via config, NOT bind()
+    llm.invoke(
+        messages,
+        config={"callbacks": [handler]}
+    )
+
+    full_response = "".join(streamed_tokens)
+
+    return {"messages": [AIMessage(content=full_response)]}
+
+
+# --------------------------------------------------
+# Graph
+# --------------------------------------------------
 
 checkpointer = InMemorySaver()
 
@@ -33,3 +82,18 @@ graph.add_edge(START, "chat_node")
 graph.add_edge("chat_node", END)
 
 chatbot = graph.compile(checkpointer=checkpointer)
+
+# --------------------------------------------------
+# Title Generator
+# --------------------------------------------------
+
+def generate_chat_title(user_input: str) -> str:
+    try:
+        title_llm = ChatOpenAI(
+            base_url="https://openrouter.ai/api/v1",
+            model="gpt-3.5-turbo"
+        )
+        res = title_llm.invoke(f"Create a 3-word title for: {user_input}")
+        return res.content.strip().replace('"', '')
+    except Exception:
+        return user_input[:20]

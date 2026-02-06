@@ -1,193 +1,222 @@
 import streamlit as st
-from backend import chatbot
+from backend import chatbot, generate_chat_title
 from rag import ask_pdf
 from langchain_core.messages import HumanMessage, AIMessage
-from langchain_openai import ChatOpenAI
 import uuid
+import textwrap
+from reportlab.lib.pagesizes import letter
+from reportlab.pdfgen import canvas
+import tkinter as tk
+from tkinter import filedialog
 import time
-from datetime import datetime
 
 # --------------------------------------------------
-# Utilities
+# PDF Utilities
 # --------------------------------------------------
 
-def generate_thread_id():
-    return str(uuid.uuid4())
+def get_file_path():
+    root = tk.Tk()
+    root.withdraw()
+    root.attributes("-topmost", True)
+    path = filedialog.asksaveasfilename(
+        defaultextension=".pdf",
+        filetypes=[("PDF files", "*.pdf")],
+        title="Save responses as PDF"
+    )
+    root.destroy()
+    return path
 
 
-def now_ts():
-    return datetime.utcnow().timestamp()
+def save_responses_to_pdf(responses, file_path):
+    """
+    responses = list of tuples -> [(user_msg, assistant_msg), ...]
+    """
+    c = canvas.Canvas(file_path, pagesize=letter)
+    width, height = letter
+    y = height - 50
 
+    c.setFont("Helvetica-Bold", 12)
+    c.drawString(50, y, "CHAT RESPONSES")
+    y -= 30
+    c.setFont("Helvetica", 10)
 
-def load_conversation(thread_id):
-    state = chatbot.get_state(
-        config={"configurable": {"thread_id": thread_id}}
-    ).values
-    return state.get("messages", [])
+    for idx, (user_msg, assistant_msg) in enumerate(responses, start=1):
+        wrapped_user = textwrap.wrap(f"Q{idx}: {user_msg}", 95)
+        for line in wrapped_user:
+            if y < 60:
+                c.showPage()
+                y = height - 50
+                c.setFont("Helvetica", 10)
+            c.drawString(50, y, line)
+            y -= 14
 
+        y -= 10
+
+        wrapped_agent = textwrap.wrap(f"A{idx}: {assistant_msg}", 95)
+        for line in wrapped_agent:
+            if y < 60:
+                c.showPage()
+                y = height - 50
+                c.setFont("Helvetica", 10)
+            c.drawString(50, y, line)
+            y -= 14
+
+        y -= 25
+
+    c.save()
 
 # --------------------------------------------------
-# Title LLM (separate from LangGraph)
-# --------------------------------------------------
-
-title_llm = ChatOpenAI(
-    base_url="https://openrouter.ai/api/v1",
-    model="gpt-3.5-turbo"
-)
-
-
-def generate_chat_title(user_msg, assistant_msg):
-    prompt = f"""
-Generate a short, clear title (3–6 words) for this conversation.
-Do not use quotes.
-
-User: {user_msg}
-Assistant: {assistant_msg}
-"""
-    return title_llm.invoke(prompt).content.strip()
-
-
-# --------------------------------------------------
-# Page config
+# Page Config
 # --------------------------------------------------
 
 st.set_page_config(page_title="Agent Chat", layout="centered")
-st.title("💬 Agent")
 
 # --------------------------------------------------
-# Cache RAG
-# --------------------------------------------------
-
-@st.cache_resource
-def get_ask_pdf():
-    return ask_pdf
-
-pdf_ask = get_ask_pdf()
-
-# --------------------------------------------------
-# Session state
+# Session State
 # --------------------------------------------------
 
 if "thread_id" not in st.session_state:
-    st.session_state.thread_id = generate_thread_id()
+    st.session_state.thread_id = str(uuid.uuid4())
 
 if "chat_titles" not in st.session_state:
     st.session_state.chat_titles = {}
 
-if "chat_last_updated" not in st.session_state:
-    st.session_state.chat_last_updated = {}
+if "pdf_path" not in st.session_state:
+    st.session_state.pdf_path = None
 
-if "rag_mode" not in st.session_state:
-    st.session_state.rag_mode = {}
-
-if st.session_state.thread_id not in st.session_state.rag_mode:
-    st.session_state.rag_mode[st.session_state.thread_id] = False
+# 🔥 THIS IS THE KEY FIX
+if "pdf_responses" not in st.session_state:
+    st.session_state.pdf_responses = []  # [(user, assistant)]
 
 # --------------------------------------------------
-# LangGraph config (MANDATORY)
+# Sidebar
 # --------------------------------------------------
 
-CONFIG = {
-    "configurable": {
-        "thread_id": st.session_state.thread_id
-    }
-}
+st.sidebar.title("Conversations")
 
-# --------------------------------------------------
-# RAG toggle
-# --------------------------------------------------
+if st.sidebar.button("➕ New Chat", use_container_width=True):
+    st.session_state.thread_id = str(uuid.uuid4())
+    st.session_state.pdf_path = None
+    st.session_state.pdf_responses.clear()
 
-rag_mode = st.toggle(
-    "📄 Ask PDF (RAG Mode)",
-    value=st.session_state.rag_mode[st.session_state.thread_id]
-)
-st.session_state.rag_mode[st.session_state.thread_id] = rag_mode
-
-# --------------------------------------------------
-# Sidebar (ChatGPT style)
-# --------------------------------------------------
-
-st.sidebar.title("LangGraph Agent")
-
-if st.sidebar.button("➕ New Chat"):
-    st.session_state.thread_id = generate_thread_id()
-    st.session_state.rag_mode[st.session_state.thread_id] = False
-    st.rerun()
-
-st.sidebar.header("My Conversations")
-
-sorted_threads = sorted(
-    st.session_state.chat_titles.keys(),
-    key=lambda t: st.session_state.chat_last_updated.get(t, 0),
-    reverse=True
-)
-
-for tid in sorted_threads:
-    if st.sidebar.button(st.session_state.chat_titles[tid], key=tid):
+for tid, title in st.session_state.chat_titles.items():
+    if st.sidebar.button(f"💬 {title}", key=tid, use_container_width=True):
         st.session_state.thread_id = tid
-        st.rerun()
+        st.session_state.pdf_path = None
+        st.session_state.pdf_responses.clear()
 
 # --------------------------------------------------
-# Render messages (ONLY from LangGraph)
+# Chat Area
 # --------------------------------------------------
 
-messages = load_conversation(st.session_state.thread_id)
+st.title("💬 Agent")
 
-for msg in messages:
+state = chatbot.get_state(
+    config={"configurable": {"thread_id": st.session_state.thread_id}}
+).values
+
+messages = state.get("messages", [])
+
+for i, msg in enumerate(messages):
     role = "user" if isinstance(msg, HumanMessage) else "assistant"
+
     with st.chat_message(role):
         st.markdown(msg.content)
 
+        if role == "assistant":
+            cols = st.columns([0.06, 0.06, 0.06, 0.22, 0.6])
+
+            cols[0].button("👍", key=f"up_{i}")
+            cols[1].button("👎", key=f"down_{i}")
+            cols[2].button("📋", key=f"copy_{i}")
+
+            if cols[3].button("📥 Download", key=f"dl_{i}"):
+
+                # Get matching user question
+                user_text = "N/A"
+                if i > 0 and isinstance(messages[i - 1], HumanMessage):
+                    user_text = messages[i - 1].content
+
+                assistant_text = msg.content
+
+                # Avoid duplicate appends
+                entry = (user_text, assistant_text)
+                if entry not in st.session_state.pdf_responses:
+                    st.session_state.pdf_responses.append(entry)
+
+                if not st.session_state.pdf_path:
+                    st.session_state.pdf_path = get_file_path()
+
+                if st.session_state.pdf_path:
+                    save_responses_to_pdf(
+                        st.session_state.pdf_responses,
+                        st.session_state.pdf_path
+                    )
+                    st.toast("Response appended to PDF")
+
 # --------------------------------------------------
-# Chat input
+# Controls
 # --------------------------------------------------
 
+rag_mode = st.toggle("📄 RAG Mode", value=False)
 user_input = st.chat_input("Type your message...")
 
+# --------------------------------------------------
+# Message Handling (Streaming Feel)
+# --------------------------------------------------
+
+# --------------------------------------------------
+# Message Handling (IMPROVED UX)
+# --------------------------------------------------
+
 if user_input:
-    # 1️⃣ Show user instantly
+    # Save title once
+    if st.session_state.thread_id not in st.session_state.chat_titles:
+        st.session_state.chat_titles[
+            st.session_state.thread_id
+        ] = generate_chat_title(user_input)
+
+    # 1️⃣ Immediately show user message (prevents disappearance)
     with st.chat_message("user"):
         st.markdown(user_input)
 
-    # 2️⃣ Save user once
+    # Add user message to state
     chatbot.update_state(
-        CONFIG,
+        {"configurable": {"thread_id": st.session_state.thread_id}},
         {"messages": [HumanMessage(content=user_input)]}
     )
 
-    # 3️⃣ Assistant response (CRITICAL FIX HERE)
+    # 2️⃣ Show temporary "Thinking..." assistant bubble
     with st.chat_message("assistant"):
-        placeholder = st.empty()
-        full_response = ""
+        thinking_box = st.empty()
+        thinking_box.markdown("⏳ **Thinking…**")
 
+        streamed_text = ""
+
+        # Generate response
         if rag_mode:
-            with st.spinner("Searching PDF..."):
-                answer = pdf_ask(user_input)
-
-            for ch in answer:
-                full_response += ch
-                placeholder.markdown(full_response)
-                time.sleep(0.002)
-
+            full_response = ask_pdf(user_input)
             chatbot.update_state(
-                CONFIG,
+                {"configurable": {"thread_id": st.session_state.thread_id}},
                 {"messages": [AIMessage(content=full_response)]}
             )
         else:
-            # ✅ MUST PASS EMPTY INPUT TO TRIGGER GRAPH
-            for chunk, _ in chatbot.stream(
-                {},
-                config=CONFIG,
-                stream_mode="messages",
-            ):
-                full_response += chunk.content
-                placeholder.markdown(full_response)
+            chatbot.invoke(
+                {"messages": []},
+                config={"configurable": {"thread_id": st.session_state.thread_id}}
+            )
 
-    # 4️⃣ Chat title (first message only)
-    tid = st.session_state.thread_id
-    if tid not in st.session_state.chat_titles:
-        title = generate_chat_title(user_input, full_response)
-        st.session_state.chat_titles[tid] = title
+            state = chatbot.get_state(
+                config={"configurable": {"thread_id": st.session_state.thread_id}}
+            ).values
 
-    st.session_state.chat_last_updated[tid] = now_ts()
+            full_response = state["messages"][-1].content
+
+        # 3️⃣ Replace thinking box with streaming response
+        for word in full_response.split():
+            streamed_text += word + " "
+            thinking_box.markdown(streamed_text)
+            time.sleep(0.03)
+
     st.rerun()
+
