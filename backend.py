@@ -13,7 +13,7 @@ from langchain_core.callbacks import BaseCallbackHandler
 # ENV
 # --------------------------------------------------
 
-os.environ["OPENAI_API_KEY"] = "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"  # keep yours
+os.environ["OPENAI_API_KEY"] = "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"  # keep yours
 
 # --------------------------------------------------
 # LLM (DEFINED ONCE)
