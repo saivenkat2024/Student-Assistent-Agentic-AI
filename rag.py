@@ -1,3 +1,4 @@
+
 import os
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
@@ -17,7 +18,7 @@ llm = ChatOpenAI(
     api_key=os.getenv("OPENROUTER_API_KEY"),
     base_url="https://openrouter.ai/api/v1",
     model="gpt-3.5-turbo",
-    temperature=0.1  # 🔑 very low → prevents summarization
+    temperature=0.1
 )
 
 # --------------------------------------------------
@@ -38,12 +39,9 @@ db = FAISS.load_local(
 )
 
 # --------------------------------------------------
-# Query normalizer (case + typo tolerant via LLM)
+# Query normalizer
 # --------------------------------------------------
 def normalize_query(query: str) -> str:
-    """
-    Fix spelling and casing but keep meaning.
-    """
     prompt = f"""
 Correct spelling and casing of the following question.
 Do NOT change its meaning.
@@ -56,34 +54,38 @@ Corrected question:
     return llm.invoke(prompt).content.strip()
 
 # --------------------------------------------------
-# MAIN RAG FUNCTION (FINAL + FULL ANSWERS)
+# MAIN RAG FUNCTION (FULL EXTRACTION)
 # --------------------------------------------------
 def ask_pdf(question: str) -> str:
-    """
-    FULL-ANSWER RAG for theory PDFs.
-    Extracts ALL relevant content instead of summarizing.
-    """
-
-    # 1️⃣ Normalize query (handles typos like attensiii)
     clean_question = normalize_query(question)
 
-    # 2️⃣ Retrieve aggressively
     docs = db.similarity_search(
         clean_question,
-        k=12  # ⬅️ more chunks = more content
+        k=20
     )
 
     if not docs:
         return "Not found in the document."
 
-    # 3️⃣ Build FULL context (NO filtering)
+    # --------------------------------------------------
+    # Sort chunks to restore document flow
+    # --------------------------------------------------
+    docs = sorted(
+        docs,
+        key=lambda d: (
+            d.metadata.get("source", ""),
+            d.metadata.get("page", 0),
+            d.metadata.get("chunk", 0)
+        )
+    )
+
     context = "\n\n".join(d.page_content for d in docs)
 
     if not context.strip():
         return "Not found in the document."
 
     # --------------------------------------------------
-    # 🔥 EXTRACTION-BASED PROMPT (THIS IS THE KEY)
+    # Extraction-only prompt
     # --------------------------------------------------
     prompt = f"""
 You are an academic assistant.
@@ -96,8 +98,8 @@ CRITICAL RULES:
 - DO NOT summarize
 - DO NOT shorten
 - DO NOT skip details
-- If multiple paragraphs explain the concept, include ALL of them
-- Rephrase lightly ONLY for clarity
+- Include ALL paragraphs that explain the concept
+- Light rephrasing only for clarity
 - Use ONLY the given context
 - If the answer does not exist, say exactly:
   "Not found in the document."
